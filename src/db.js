@@ -47,6 +47,17 @@ export async function putEntry(entry) {
   });
 }
 
+export async function putEntries(entries) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('entries', 'readwrite');
+    const store = tx.objectStore('entries');
+    entries.forEach(e => store.put(e));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export async function deleteEntry(id) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -119,7 +130,6 @@ export async function addToQueue(item) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('queue', 'readwrite');
-    // Remove auto-generated key before storing
     const { qid, ...rest } = item;
     const req = tx.objectStore('queue').add(rest);
     req.onsuccess = () => resolve(req.result);
