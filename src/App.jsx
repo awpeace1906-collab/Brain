@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Search, Pin, PinOff, Clipboard, Check, Pencil, Archive, Trash2,
-  Menu, Plus, X, Sparkles, Settings, Wifi, WifiOff, Download, Eye, EyeOff
+  Menu, Plus, X, Sparkles, Settings, Wifi, WifiOff, Download, Eye, EyeOff,
+  RefreshCw, CloudOff, Cloud
 } from 'lucide-react';
 import {
-  getAllEntries, putEntry, deleteEntry, clearAllEntries,
+  getAllEntries, putEntry, putEntries, deleteEntry, clearAllEntries,
   getSetting, setSetting, getQueue, addToQueue, removeFromQueue
 } from './db.js';
 import { apiEnrich, apiDigest, validateKey } from './api.js';
+import { validateToken, createGist, fetchGist, pushGist, mergeEntries } from './gist.js';
 
 /* ══════════════════════════════════════════════════════════
    CONSTANTS
@@ -138,6 +140,27 @@ function FChip({ label, color, onRemove }) {
   );
 }
 
+/* Standard mobile "clear field" affordance — filled gray circle with a
+   white X inside, matching iOS/Android text field clear buttons.
+   Positioned absolutely by the caller — pass `right` to offset it
+   (e.g. to sit left of an eye-toggle). */
+function ClearX({ onClick, title='Clear', right=8 }) {
+  const [pressed,setP]=useState(false);
+  return (
+    <button type="button" onClick={onClick} title={title}
+      onMouseDown={()=>setP(true)} onMouseUp={()=>setP(false)} onMouseLeave={()=>setP(false)}
+      style={{ position:'absolute', right, top:'50%', transform:'translateY(-50%)',
+        width:18, height:18, borderRadius:'50%', border:'none', padding:0,
+        background: pressed ? '#8B949E' : '#6E7681',
+        display:'flex', alignItems:'center', justifyContent:'center',
+        cursor:'pointer', flexShrink:0, transition:'background .1s' }}>
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+        <path d="M1.5 1.5L8.5 8.5M8.5 1.5L1.5 8.5" stroke="#0D1117" strokeWidth="1.6" strokeLinecap="round"/>
+      </svg>
+    </button>
+  );
+}
+
 /* ══════════════════════════════════════════════════════════
    SIDEBAR
 ══════════════════════════════════════════════════════════ */
@@ -186,8 +209,15 @@ function SSec({ title, children }) {
 }
 
 function Sidebar({ open, isMobile, onClose, allTags, fTags, fType, fDate, fPin,
-  total, todayCt, queueLen, onTag, onType, onDate, onPin, onDigest, onClear, hasF, onSettings }) {
+  total, todayCt, queueLen, syncStatus, onTag, onType, onDate, onPin, onDigest, onClear, hasF, onSettings }) {
   if (!open) return null;
+  const syncIcon = syncStatus==='syncing'
+    ? <RefreshCw size={11} className="spin" color="#D29922"/>
+    : syncStatus==='connected'
+      ? <Cloud size={11} color="#3FB950"/>
+      : syncStatus==='error'
+        ? <CloudOff size={11} color="#F78166"/>
+        : null;
   const panel = (
     <div style={{ width:240, minWidth:240, height:'100%', background:'#161B22',
       borderRight:'1px solid #21262D', display:'flex', flexDirection:'column', overflow:'hidden',
@@ -198,9 +228,11 @@ function Sidebar({ open, isMobile, onClose, allTags, fTags, fType, fDate, fPin,
           <span style={{ color:'#E6EDF3' }}>brain</span>
           <span style={{ color:'#58A6FF' }}>{' }'}</span>
         </div>
-        <div style={{ fontSize:11, color:'#3D444D', marginTop:3, fontFamily:"'JetBrains Mono',monospace" }}>
-          {total} thoughts · {todayCt} today
-          {queueLen>0 && <span style={{ color:'#D29922' }}> · {queueLen} queued</span>}
+        <div style={{ fontSize:11, color:'#3D444D', marginTop:3, fontFamily:"'JetBrains Mono',monospace",
+          display:'flex', alignItems:'center', gap:6 }}>
+          <span>{total} thoughts · {todayCt} today</span>
+          {queueLen>0 && <span style={{ color:'#D29922' }}>· {queueLen} queued</span>}
+          {syncIcon}
         </div>
       </div>
       <div style={{ padding:'0 12px 14px' }}>
@@ -271,16 +303,26 @@ function Sidebar({ open, isMobile, onClose, allTags, fTags, fType, fDate, fPin,
    SETTINGS PANEL
 ══════════════════════════════════════════════════════════ */
 
-function SettingsPanel({ onClose, onEntriesCleared }) {
+function SettingsPanel({ onClose, onEntriesCleared, onSyncConfigChanged, syncStatus, lastSynced, onSyncNow }) {
   const [key, setKey]           = useState('');
   const [showKey, setShowKey]   = useState(false);
-  const [keyStatus, setKS]      = useState('idle'); // idle | checking | ok | bad
-  const [saved, setSaved]       = useState(false);
+  const [keyStatus, setKS]      = useState('idle');
   const [confirmClear, setCC]   = useState(false);
+  const [confirmReset, setCR]   = useState(false);
   const [entries, setEnt]       = useState([]);
+
+  const [gistToken, setGT]      = useState('');
+  const [gistId, setGID]        = useState('');
+  const [gistTokenInput, setGTI] = useState('');
+  const [gistIdInput, setGII]   = useState('');
+  const [showGistToken, setSGT] = useState(false);
+  const [gistBusy, setGBusy]    = useState(false);
+  const [gistMsg, setGMsg]      = useState('');
 
   useEffect(() => {
     getSetting('anthropicKey').then(k => setKey(k||''));
+    getSetting('githubToken').then(t => { setGT(t||''); setGTI(t||''); });
+    getSetting('gistId').then(g => { setGID(g||''); setGII(g||''); });
     getAllEntries().then(setEnt);
   }, []);
 
@@ -292,8 +334,7 @@ function SettingsPanel({ onClose, onEntriesCleared }) {
     if (ok) {
       await setSetting('anthropicKey', trimmed);
       setKS('ok');
-      setSaved(true);
-      setTimeout(()=>{ setSaved(false); setKS('idle'); }, 3000);
+      setTimeout(()=>setKS('idle'), 3000);
     } else {
       setKS('bad');
       setTimeout(()=>setKS('idle'), 3000);
@@ -306,17 +347,73 @@ function SettingsPanel({ onClose, onEntriesCleared }) {
     onClose();
   }
 
+  /* Reset every setting field back to empty — API key, Gist token/ID, sync
+     connection — without touching any captured entries. */
+  async function resetAllSettings() {
+    await Promise.all([
+      setSetting('anthropicKey', ''),
+      setSetting('githubToken', ''),
+      setSetting('gistId', ''),
+      setSetting('lastSynced', '')
+    ]);
+    setKey(''); setKS('idle');
+    setGT(''); setGID(''); setGTI(''); setGII('');
+    onSyncConfigChanged();
+  }
+
+  /* ── Gist connect: either create a fresh gist, or attach to an existing one ── */
+  async function connectGist() {
+    const token = gistTokenInput.trim();
+    if (!token) return;
+    setGBusy(true); setGMsg('Validating token…');
+    const valid = await validateToken(token);
+    if (!valid) {
+      setGBusy(false); setGMsg('Invalid token, or missing "gist" scope.');
+      return;
+    }
+    try {
+      let id = gistIdInput.trim();
+      if (id) {
+        setGMsg('Connecting to existing gist…');
+        await fetchGist(token, id); // throws if not reachable
+      } else {
+        setGMsg('Creating new sync gist…');
+        const currentEntries = await getAllEntries();
+        id = await createGist(token, currentEntries.filter(e => !e.archived));
+      }
+      await setSetting('githubToken', token);
+      await setSetting('gistId', id);
+      setGT(token); setGID(id); setGII(id);
+      setGMsg('Connected.');
+      onSyncConfigChanged();
+    } catch (e) {
+      setGMsg(`Could not connect: ${e.message}`);
+    } finally {
+      setGBusy(false);
+      setTimeout(()=>setGMsg(''), 4000);
+    }
+  }
+
+  async function disconnectGist() {
+    await setSetting('githubToken', '');
+    await setSetting('gistId', '');
+    setGT(''); setGID(''); setGTI(''); setGII('');
+    onSyncConfigChanged();
+  }
+
   const keyColor = { idle:'#8B949E', checking:'#D29922', ok:'#3FB950', bad:'#F78166' }[keyStatus];
   const keyLabel = { idle:'Save key', checking:'Checking…', ok:'✓ Valid — saved', bad:'✗ Invalid key' }[keyStatus];
   const nonArchived = entries.filter(e=>!e.archived);
+  const isConnected = !!(gistToken && gistId);
 
   return (
     <div onClick={onClose} style={{ position:'fixed', inset:0, zIndex:200,
       background:'rgba(0,0,0,.8)', backdropFilter:'blur(5px)',
-      display:'flex', alignItems:'center', justifyContent:'center', padding:20 }}>
+      display:'flex', alignItems:'center', justifyContent:'center', padding:20, overflowY:'auto' }}>
       <div onClick={e=>e.stopPropagation()}
         style={{ background:'#161B22', border:'1px solid #30363D', borderRadius:12,
-          padding:28, maxWidth:480, width:'100%', boxShadow:'0 24px 64px rgba(0,0,0,.9)' }}>
+          padding:28, maxWidth:480, width:'100%', boxShadow:'0 24px 64px rgba(0,0,0,.9)',
+          maxHeight:'88vh', overflowY:'auto' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:24 }}>
           <div style={{ display:'flex', alignItems:'center', gap:10 }}>
             <Settings size={16} color='#8B949E'/>
@@ -339,12 +436,13 @@ function SettingsPanel({ onClose, onEntriesCleared }) {
               onChange={e=>setKey(e.target.value)}
               placeholder="sk-ant-..."
               style={{ width:'100%', background:'#0D1117', border:'1px solid #30363D',
-                borderRadius:7, color:'#E6EDF3', padding:'10px 40px 10px 12px',
+                borderRadius:7, color:'#E6EDF3', padding:`10px ${key?66:40}px 10px 12px`,
                 fontSize:13, fontFamily:"'JetBrains Mono',monospace",
                 outline:'none', transition:'border-color .15s' }}
               onFocus={e=>e.target.style.borderColor='#58A6FF'}
               onBlur={e=>e.target.style.borderColor='#30363D'}
               onKeyDown={e=>e.key==='Enter'&&saveKey()}/>
+            {key && <ClearX right={36} title="Clear field" onClick={()=>setKey('')}/>}
             <button onClick={()=>setShowKey(p=>!p)}
               style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)',
                 background:'none', border:'none', color:'#8B949E', cursor:'pointer',
@@ -368,6 +466,103 @@ function SettingsPanel({ onClose, onEntriesCleared }) {
               {keyLabel}
             </button>
           </div>
+        </div>
+
+        {/* Gist Sync */}
+        <div style={{ marginBottom:24, paddingTop:20, borderTop:'1px solid #21262D' }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+            <span style={{ fontSize:12, fontWeight:500, color:'#8B949E',
+              fontFamily:"'JetBrains Mono',monospace", letterSpacing:'0.5px' }}>
+              CROSS-DEVICE SYNC (GITHUB GIST)
+            </span>
+            {isConnected && (
+              <span style={{ fontSize:10, color:'#3FB950', fontFamily:"'JetBrains Mono',monospace" }}>
+                ● connected
+              </span>
+            )}
+          </div>
+
+          {!isConnected ? (
+            <>
+              <p style={{ fontSize:12, color:'#8B949E', lineHeight:1.6, marginBottom:10 }}>
+                Syncs your entries to a private GitHub Gist so the same brain shows up on every device.
+                Needs a{' '}
+                <a href="https://github.com/settings/tokens/new?scopes=gist&description=brain-sync"
+                  target="_blank" rel="noopener noreferrer" style={{ color:'#58A6FF', textDecoration:'none' }}>
+                  personal access token
+                </a>{' '}
+                with just the <code style={{ color:'#BC8CFF' }}>gist</code> scope.
+              </p>
+              <div style={{ position:'relative', marginBottom:8 }}>
+                <input type={showGistToken?'text':'password'} value={gistTokenInput}
+                  onChange={e=>setGTI(e.target.value)}
+                  placeholder="ghp_… (token with gist scope)"
+                  style={{ width:'100%', background:'#0D1117', border:'1px solid #30363D',
+                    borderRadius:7, color:'#E6EDF3', padding:`10px ${gistTokenInput?66:40}px 10px 12px`,
+                    fontSize:13, fontFamily:"'JetBrains Mono',monospace", outline:'none' }}
+                  onFocus={e=>e.target.style.borderColor='#58A6FF'}
+                  onBlur={e=>e.target.style.borderColor='#30363D'}/>
+                {gistTokenInput && <ClearX right={36} title="Clear field" onClick={()=>setGTI('')}/>}
+                <button onClick={()=>setSGT(p=>!p)}
+                  style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)',
+                    background:'none', border:'none', color:'#8B949E', cursor:'pointer', display:'flex' }}>
+                  {showGistToken ? <EyeOff size={14}/> : <Eye size={14}/>}
+                </button>
+              </div>
+              <div style={{ position:'relative', marginBottom:10 }}>
+                <input value={gistIdInput} onChange={e=>setGII(e.target.value)}
+                  placeholder="Existing Gist ID (leave blank to create a new one)"
+                  style={{ width:'100%', background:'#0D1117', border:'1px solid #30363D',
+                    borderRadius:7, color:'#E6EDF3', padding:`10px ${gistIdInput?32:12}px 10px 12px`,
+                    fontSize:12, fontFamily:"'JetBrains Mono',monospace", outline:'none' }}
+                  onFocus={e=>e.target.style.borderColor='#58A6FF'}
+                  onBlur={e=>e.target.style.borderColor='#30363D'}/>
+                {gistIdInput && <ClearX onClick={()=>setGII('')} title="Clear field"/>}
+              </div>
+              <button onClick={connectGist} disabled={!gistTokenInput.trim()||gistBusy}
+                style={{ width:'100%', padding:'9px 12px', borderRadius:7,
+                  background: gistTokenInput.trim() ? '#1F6FEB' : '#21262D',
+                  border:'none', color: gistTokenInput.trim() ? '#fff' : '#8B949E',
+                  fontSize:13, fontFamily:"'Inter',sans-serif", fontWeight:500,
+                  cursor: gistTokenInput.trim()?'pointer':'default' }}>
+                {gistBusy ? 'Working…' : gistIdInput.trim() ? 'Connect to existing gist' : 'Create sync gist'}
+              </button>
+              {gistMsg && (
+                <div style={{ marginTop:8, fontSize:11, color:'#D29922' }}>{gistMsg}</div>
+              )}
+            </>
+          ) : (
+            <>
+              <div style={{ background:'#0D1117', border:'1px solid #21262D', borderRadius:7,
+                padding:'10px 12px', marginBottom:10 }}>
+                <div style={{ fontSize:11, color:'#3D444D', marginBottom:3 }}>Gist ID</div>
+                <div style={{ fontSize:12, color:'#C9D1D9', fontFamily:"'JetBrains Mono',monospace",
+                  wordBreak:'break-all' }}>{gistId}</div>
+                <div style={{ fontSize:11, color:'#3D444D', marginTop:6 }}>
+                  {lastSynced ? `Last synced ${ago(lastSynced)} ago` : 'Not synced yet'}
+                </div>
+              </div>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={onSyncNow} disabled={syncStatus==='syncing'}
+                  style={{ flex:1, padding:'8px 12px', borderRadius:6, background:'#21262D',
+                    border:'1px solid #30363D', color:'#C9D1D9', fontSize:12,
+                    fontFamily:"'Inter',sans-serif", cursor:'pointer',
+                    display:'flex', alignItems:'center', justifyContent:'center', gap:6 }}>
+                  <RefreshCw size={12}/> {syncStatus==='syncing' ? 'Syncing…' : 'Sync now'}
+                </button>
+                <button onClick={disconnectGist}
+                  style={{ flex:1, padding:'8px 12px', borderRadius:6, background:'none',
+                    border:'1px solid #F7816640', color:'#F78166', fontSize:12,
+                    fontFamily:"'Inter',sans-serif", cursor:'pointer' }}>
+                  Disconnect
+                </button>
+              </div>
+              <p style={{ fontSize:11, color:'#3D444D', marginTop:10, lineHeight:1.5 }}>
+                On your other device, open Settings → paste the same token and this Gist ID under
+                "Existing Gist ID" to connect the same brain there.
+              </p>
+            </>
+          )}
         </div>
 
         {/* Export */}
@@ -423,6 +618,35 @@ function SettingsPanel({ onClose, onEntriesCleared }) {
               </button>
             </div>
           )}
+
+          <div style={{ marginTop:8 }}>
+            {!confirmReset ? (
+              <button onClick={()=>setCR(true)}
+                style={{ width:'100%', padding:'8px 12px', borderRadius:6, background:'none',
+                  border:'1px solid #30363D', color:'#8B949E', fontSize:12,
+                  fontFamily:"'Inter',sans-serif", cursor:'pointer' }}>
+                Reset all settings (keeps your entries)
+              </button>
+            ) : (
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={()=>{ resetAllSettings(); setCR(false); }}
+                  style={{ flex:1, padding:'8px 12px', borderRadius:6, background:'#21262D',
+                    border:'1px solid #D2992280', color:'#D29922', fontSize:12,
+                    fontFamily:"'Inter',sans-serif", cursor:'pointer', fontWeight:500 }}>
+                  Yes, reset settings
+                </button>
+                <button onClick={()=>setCR(false)}
+                  style={{ flex:1, padding:'8px 12px', borderRadius:6, background:'#21262D',
+                    border:'1px solid #30363D', color:'#8B949E', fontSize:12,
+                    fontFamily:"'Inter',sans-serif", cursor:'pointer' }}>
+                  Cancel
+                </button>
+              </div>
+            )}
+            <p style={{ fontSize:10.5, color:'#3D444D', marginTop:6, lineHeight:1.5 }}>
+              Clears your API key and disconnects Gist sync (token + Gist ID). Your captured entries stay untouched.
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -483,7 +707,6 @@ function EntryCard({ entry, processing, editing, editDraft, copied,
         boxShadow:hov?'0 4px 16px rgba(0,0,0,.35)':'none',
         opacity:processing?.7:1 }}>
 
-      {/* Header */}
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10, gap:8 }}>
         <div style={{ display:'flex', alignItems:'center', gap:7, flexWrap:'wrap' }}>
           <span style={{ background:`${m.col}18`, border:`1px solid ${m.col}30`,
@@ -516,7 +739,6 @@ function EntryCard({ entry, processing, editing, editDraft, copied,
         </div>
       </div>
 
-      {/* Body */}
       {editing?(
         <div>
           <textarea value={editDraft} onChange={e=>onEditChange(e.target.value)}
@@ -533,6 +755,16 @@ function EntryCard({ entry, processing, editing, editDraft, copied,
               border:'1px solid #30363D', borderRadius:5, color:'#8B949E',
               padding:'6px 14px', fontSize:12, fontFamily:"'Inter',sans-serif",
               cursor:'pointer' }}>Cancel</button>
+            {editDraft.length>0&&(
+              <button onClick={()=>onEditChange('')} title="Clear text"
+                style={{ background:'none', border:'none', color:'#8B949E',
+                  fontSize:12, fontFamily:"'Inter',sans-serif", cursor:'pointer',
+                  marginLeft:'auto', padding:'6px 8px' }}
+                onMouseEnter={e=>e.currentTarget.style.color='#F78166'}
+                onMouseLeave={e=>e.currentTarget.style.color='#8B949E'}>
+                clear
+              </button>
+            )}
           </div>
         </div>
       ):entry.type==='code'?(
@@ -572,13 +804,11 @@ function EntryCard({ entry, processing, editing, editDraft, copied,
         </div>
       )}
 
-      {/* Summary */}
       {!editing&&entry.summary&&!processing&&(
         <div style={{ marginTop:10, paddingTop:10, borderTop:'1px solid #21262D',
           fontSize:12, color:'#8B949E', fontStyle:'italic' }}>{entry.summary}</div>
       )}
 
-      {/* Footer */}
       <div style={{ marginTop:10, display:'flex', alignItems:'center',
         justifyContent:'space-between', gap:8, flexWrap:'wrap' }}>
         <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
@@ -629,10 +859,20 @@ function Drawer({ open, draft, taRef, onOpen, onClose, onChange, onSubmit, isOnl
               </span>
               <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                 {draft.length>0&&(
-                  <span style={{ color:'#3D444D', fontSize:11,
-                    fontFamily:"'JetBrains Mono',monospace" }}>{draft.length}</span>
+                  <>
+                    <span style={{ color:'#3D444D', fontSize:11,
+                      fontFamily:"'JetBrains Mono',monospace" }}>{draft.length}</span>
+                    <button onClick={()=>{ onChange(''); taRef.current?.focus(); }}
+                      title="Clear text" style={{ background:'none', border:'none',
+                      color:'#8B949E', fontSize:11, cursor:'pointer',
+                      fontFamily:"'Inter',sans-serif", padding:'2px 4px' }}
+                      onMouseEnter={e=>e.currentTarget.style.color='#F78166'}
+                      onMouseLeave={e=>e.currentTarget.style.color='#8B949E'}>
+                      clear
+                    </button>
+                  </>
                 )}
-                <button onClick={onClose} style={{ background:'none', border:'none',
+                <button onClick={onClose} title="Close drawer" style={{ background:'none', border:'none',
                   cursor:'pointer', color:'#8B949E', display:'flex', alignItems:'center' }}>
                   <X size={15}/>
                 </button>
@@ -738,6 +978,8 @@ function DigestModal({ loading, content, error, todayCt, onClose }) {
    MAIN APP
 ══════════════════════════════════════════════════════════ */
 
+const SYNC_DEBOUNCE_MS = 2500;
+
 export default function App() {
   const [entries, setE]       = useState([]);
   const [loaded, setL]        = useState(false);
@@ -763,12 +1005,16 @@ export default function App() {
   const [winW, setWW]         = useState(window.innerWidth);
   const [sbOpen, setSB]       = useState(window.innerWidth>768);
 
+  const [syncStatus, setSyncStatus] = useState('idle'); // idle | connected | syncing | error
+  const [lastSynced, setLastSynced] = useState(null);
+  const gistConfigRef = useRef({ token:null, gistId:null });
+  const syncTimerRef  = useRef(null);
+
   const taRef   = useRef(null);
   const srchRef = useRef(null);
   const feedRef = useRef(null);
   const isMobile = winW <= 768;
 
-  /* ── Resize ── */
   useEffect(()=>{
     const h=()=>setWW(window.innerWidth);
     window.addEventListener('resize',h);
@@ -776,7 +1022,6 @@ export default function App() {
   },[]);
   useEffect(()=>{ if(isMobile) setSB(false); },[isMobile]);
 
-  /* ── Fonts + Global CSS ── */
   useEffect(()=>{
     const link=document.createElement('link');
     link.rel='stylesheet';
@@ -794,9 +1039,11 @@ export default function App() {
       @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
       @keyframes pulse{0%,100%{opacity:.45}50%{opacity:.85}}
       @keyframes drawerUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+      @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
       .entry-card{animation:fadeUp .22s ease forwards}
       .processing{animation:pulse 1.4s ease infinite}
       .drawer-enter{animation:drawerUp .18s ease forwards}
+      .spin{animation:spin 1s linear infinite}
       textarea{resize:none}button{cursor:pointer}
       input:focus,textarea:focus{outline:none}
     `;
@@ -804,21 +1051,54 @@ export default function App() {
     return ()=>{ document.head.removeChild(link); document.head.removeChild(sty); };
   },[]);
 
-  /* ── Load from IndexedDB ── */
+  /* ── Load from IndexedDB, then pull gist if configured ── */
   useEffect(()=>{
-    Promise.all([getAllEntries(), getSetting('anthropicKey'), getQueue()])
-      .then(([saved, key, queue])=>{
-        if(saved.length) setE(saved);
-        else {
-          setE(SEED);
-          SEED.forEach(e=>putEntry(e));
-        }
+    (async () => {
+      try {
+        const [saved, key, queue, gToken, gId, gSynced] = await Promise.all([
+          getAllEntries(), getSetting('anthropicKey'), getQueue(),
+          getSetting('githubToken'), getSetting('gistId'), getSetting('lastSynced')
+        ]);
+        if (saved.length) setE(saved);
+        else { setE(SEED); await putEntries(SEED); }
         setHK(!!key);
         setQL(queue.length);
+        setLastSynced(gSynced || null);
+        if (gToken && gId) {
+          gistConfigRef.current = { token: gToken, gistId: gId };
+          setSyncStatus('connected');
+        }
         setL(true);
-      })
-      .catch(()=>{ setE(SEED); setL(true); });
+      } catch {
+        setE(SEED); setL(true);
+      }
+    })();
   },[]);
+
+  /* ── Pull from gist once on load, if configured ── */
+  useEffect(() => {
+    if (!loaded) return;
+    const { token, gistId } = gistConfigRef.current;
+    if (!token || !gistId) return;
+    (async () => {
+      setSyncStatus('syncing');
+      try {
+        const remote = await fetchGist(token, gistId);
+        const local  = await getAllEntries();
+        const merged = mergeEntries(local, remote.entries || []);
+        await putEntries(merged);
+        setE(merged);
+        await pushGist(token, gistId, merged.filter(e => !e.archived));
+        const now = new Date().toISOString();
+        await setSetting('lastSynced', now);
+        setLastSynced(now);
+        setSyncStatus('connected');
+      } catch (err) {
+        console.error('Initial sync failed:', err);
+        setSyncStatus('error');
+      }
+    })();
+  }, [loaded]);
 
   /* ── Online / Offline ── */
   useEffect(()=>{
@@ -846,7 +1126,6 @@ export default function App() {
             ? {...e, type:enriched.type||e.type, tags:enriched.tags||[],
                 summary:enriched.summary||'', aiPending:false, ...(item.urlInfo||{})}
             : e));
-          // Persist update
           const updated = (await getAllEntries()).find(e=>e.id===item.entryId);
           if(updated) await putEntry({...updated, type:enriched.type||updated.type,
             tags:enriched.tags||[], summary:enriched.summary||'', aiPending:false});
@@ -858,6 +1137,55 @@ export default function App() {
       }
     }
   },[]);
+
+  /* ── Debounced push to gist whenever entries change ── */
+  const scheduleSync = useCallback(() => {
+    const { token, gistId } = gistConfigRef.current;
+    if (!token || !gistId) return;
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(async () => {
+      setSyncStatus('syncing');
+      try {
+        const current = await getAllEntries();
+        await pushGist(token, gistId, current.filter(e => !e.archived));
+        const now = new Date().toISOString();
+        await setSetting('lastSynced', now);
+        setLastSynced(now);
+        setSyncStatus('connected');
+      } catch (err) {
+        console.error('Background sync failed:', err);
+        setSyncStatus('error');
+      }
+    }, SYNC_DEBOUNCE_MS);
+  }, []);
+
+  async function manualSync() {
+    const { token, gistId } = gistConfigRef.current;
+    if (!token || !gistId) return;
+    setSyncStatus('syncing');
+    try {
+      const remote = await fetchGist(token, gistId);
+      const local  = await getAllEntries();
+      const merged = mergeEntries(local, remote.entries || []);
+      await putEntries(merged);
+      setE(merged);
+      await pushGist(token, gistId, merged.filter(e => !e.archived));
+      const now = new Date().toISOString();
+      await setSetting('lastSynced', now);
+      setLastSynced(now);
+      setSyncStatus('connected');
+    } catch (err) {
+      console.error('Manual sync failed:', err);
+      setSyncStatus('error');
+    }
+  }
+
+  async function refreshSyncConfig() {
+    const [token, gistId] = await Promise.all([getSetting('githubToken'), getSetting('gistId')]);
+    gistConfigRef.current = { token: token || null, gistId: gistId || null };
+    setSyncStatus(token && gistId ? 'connected' : 'idle');
+    if (token && gistId) scheduleSync();
+  }
 
   /* ── Keyboard shortcuts ── */
   useEffect(()=>{
@@ -912,6 +1240,7 @@ export default function App() {
       if(idx>=0){ const n=[...prev]; n[idx]=entry; return n; }
       return [entry,...prev];
     });
+    scheduleSync();
   }
 
   async function submit(){
@@ -981,11 +1310,10 @@ export default function App() {
   async function saveEdit(id){
     const entry=entries.find(e=>e.id===id);
     if(!entry)return;
-    await upsertEntry({...entry,content:editDraft});
+    await upsertEntry({...entry,content:editDraft,timestamp:new Date().toISOString()});
     setEId(null); setED('');
   }
 
-  /* ── Loading ── */
   if(!loaded) return(
     <div style={{ background:'#0D1117', height:'100vh', display:'flex',
       alignItems:'center', justifyContent:'center' }}>
@@ -995,7 +1323,6 @@ export default function App() {
     </div>
   );
 
-  /* ── Render ── */
   return(
     <div style={{ display:'flex', height:'100vh', background:'#0D1117',
       overflow:'hidden', fontFamily:"'Inter',sans-serif" }}>
@@ -1003,13 +1330,12 @@ export default function App() {
       <Sidebar open={sbOpen} isMobile={isMobile} onClose={()=>setSB(false)}
         allTags={allTags} fTags={fTags} fType={fType} fDate={fDate} fPin={fPin}
         total={entries.filter(e=>!e.archived).length} todayCt={todayEntries.length}
-        queueLen={queueLen}
+        queueLen={queueLen} syncStatus={syncStatus}
         onTag={toggleTag} onType={setFTy} onDate={setFD} onPin={()=>setFP(p=>!p)}
         onDigest={openDigest} onClear={clearF} hasF={hasF}
         onSettings={()=>setSO(true)}/>
 
       <div style={{ flex:1, display:'flex', flexDirection:'column', minWidth:0, overflow:'hidden' }}>
-        {/* Search header */}
         <div style={{ padding:'13px 20px', borderBottom:'1px solid #21262D',
           display:'flex', alignItems:'center', gap:10, background:'#0D1117', flexShrink:0 }}>
           <button onClick={()=>setSB(p=>!p)} style={{ background:'none', border:'none',
@@ -1025,12 +1351,12 @@ export default function App() {
             <input ref={srchRef} value={search} onChange={e=>setSrch(e.target.value)}
               placeholder="Search your brain…  ⌘K"
               style={{ width:'100%', background:'#161B22', border:'1px solid #21262D',
-                borderRadius:7, color:'#E6EDF3', padding:'9px 12px 9px 32px',
+                borderRadius:7, color:'#E6EDF3', padding:`9px ${search?32:12}px 9px 32px`,
                 fontSize:14, fontFamily:"'Inter',sans-serif", transition:'border-color .15s' }}
               onFocus={e=>e.target.style.borderColor='#58A6FF'}
               onBlur={e=>e.target.style.borderColor='#21262D'}/>
+            {search && <ClearX onClick={()=>{ setSrch(''); srchRef.current?.focus(); }} title="Clear search"/>}
           </div>
-          {/* Online indicator */}
           <div title={isOnline?'Online':'Offline'} style={{ display:'flex', alignItems:'center', gap:5,
             padding:'4px 8px', borderRadius:5, background:'#161B22',
             border:`1px solid ${isOnline?'#3FB95040':'#F7816640'}`, flexShrink:0 }}>
@@ -1055,7 +1381,6 @@ export default function App() {
           </span>
         </div>
 
-        {/* Active filter chips */}
         {(fTags.length>0||fType!=='all'||fDate!=='all'||fPin)&&(
           <div style={{ padding:'8px 20px', display:'flex', flexWrap:'wrap', gap:6,
             borderBottom:'1px solid #21262D', background:'#0D1117', flexShrink:0 }}>
@@ -1066,7 +1391,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Feed */}
         <div ref={feedRef} style={{ flex:1, overflowY:'auto', padding:'18px 20px 220px' }}>
           {!hasKey&&(
             <ApiKeyBanner onOpenSettings={()=>setSO(true)}/>
@@ -1106,7 +1430,7 @@ export default function App() {
                   onPin={()=>upsertEntry({...e,pinned:!e.pinned})}
                   onCopy={()=>copyEntry(e)}
                   onArchive={()=>upsertEntry({...e,archived:true})}
-                  onDelete={async()=>{ await deleteEntry(e.id); setE(p=>p.filter(x=>x.id!==e.id)); }}
+                  onDelete={async()=>{ await deleteEntry(e.id); setE(p=>p.filter(x=>x.id!==e.id)); scheduleSync(); }}
                   onTag={toggleTag}/>
               ))}
             </div>
@@ -1127,7 +1451,11 @@ export default function App() {
       {settingsOpen&&(
         <SettingsPanel
           onClose={()=>{ setSO(false); getSetting('anthropicKey').then(k=>setHK(!!k)); }}
-          onEntriesCleared={()=>{ setE([]); }}/>
+          onEntriesCleared={()=>{ setE([]); }}
+          onSyncConfigChanged={refreshSyncConfig}
+          syncStatus={syncStatus}
+          lastSynced={lastSynced}
+          onSyncNow={manualSync}/>
       )}
     </div>
   );

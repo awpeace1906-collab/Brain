@@ -37,7 +37,6 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          # Sets the base URL to /<repo-name>/ automatically
           VITE_BASE_URL: /${{ github.event.repository.name }}/
 
       - name: Setup Pages

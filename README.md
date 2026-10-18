@@ -1,6 +1,6 @@
 # { brain }
 
-A private, offline-capable second brain. Capture anything — text, links, code, ideas, quotes. Claude auto-tags, classifies, and summarizes each entry. Works fully offline; AI enrichment queues and runs when you reconnect.
+A private, offline-capable second brain. Capture anything — text, links, code, ideas, quotes. Claude auto-tags, classifies, and summarizes each entry. Works fully offline; AI enrichment queues and runs when you reconnect. Optional cross-device sync via a private GitHub Gist.
 
 ---
 
@@ -11,6 +11,7 @@ A private, offline-capable second brain. Capture anything — text, links, code,
 | `src/App.jsx` | Full UI — feed, sidebar, drawer, settings, digest |
 | `src/db.js` | IndexedDB wrapper (entries, settings, AI queue) |
 | `src/api.js` | Anthropic API calls with API key management |
+| `src/gist.js` | GitHub Gist sync (push/pull/merge) |
 | `vite.config.js` | Vite + PWA plugin config |
 | `.github/workflows/deploy.yml` | Auto-build & deploy on push to `main` |
 
@@ -21,54 +22,64 @@ A private, offline-capable second brain. Capture anything — text, links, code,
 ### 1. Create the repo
 
 - Go to [github.com/new](https://github.com/new)
-- Name it `brain` (or whatever you want — the build picks up the repo name automatically)
+- Name it `brain` (or whatever — the build reads the repo name automatically)
 - Set to **Private**
-- Don't initialize with README
+- Don't initialize with a README (this project brings its own)
 
-### 2. Push these files
+### 2. Push it
 
-Using **GitHub Desktop:**
-- File → Add Local Repository → point to this folder
-- Or: drag the folder into GitHub Desktop
-- Commit all files, push to `main`
+```bash
+cd brain-phase2
+git init
+git remote add origin https://github.com/<you>/brain.git
+git add .
+git commit -m "Initial deploy"
+git branch -M main
+git push -u origin main
+```
 
 ### 3. Enable GitHub Pages
 
-- Go to your repo on GitHub → **Settings** → **Pages**
-- Under **Source**, select **GitHub Actions**
-- Save
+Repo → **Settings** → **Pages** → Source → **GitHub Actions** → Save.
 
-That's it. GitHub Actions builds and deploys automatically on every push to `main`.
-
-Your app will be live at:
+The Action builds and deploys automatically on every push to `main`. Live at:
 ```
-https://<your-username>.github.io/brain/
+https://<you>.github.io/brain/
 ```
 
-### 4. Add to Home Screen (mobile install)
+### 4. Add to Home Screen
 
-**iPhone / Safari:**
-1. Open the URL in Safari
-2. Tap the Share button → "Add to Home Screen"
-3. Name it `brain` → Add
+**iPhone / Safari:** Share → "Add to Home Screen"
+**Android / Chrome:** ⋮ menu → "Add to Home screen"
 
-**Android / Chrome:**
-1. Open the URL in Chrome
-2. Tap the ⋮ menu → "Add to Home screen" or look for the install banner
-
-The app is now a standalone icon on your home screen. Works offline after first load.
+The app runs standalone and works offline after first load.
 
 ---
 
 ## Add your Anthropic API key
 
-1. Open the app
-2. Tap **Settings** (sidebar, bottom)
-3. Paste your API key from [console.anthropic.com](https://console.anthropic.com)
-4. Tap **Save key** — it validates live before saving
-5. Key is stored in IndexedDB on your device only — never sent anywhere except Anthropic's API
+Sidebar → **Settings** → paste your key from [console.anthropic.com](https://console.anthropic.com) → **Save key** (validates live).
 
-**Capture works without a key** — entries save to IndexedDB immediately. AI enrichment (tags, classification, summary) queues and runs automatically when a key is added and you're online.
+Capture works without a key. AI enrichment (tags, type, summary) queues and runs automatically once a key is added and you're online.
+
+---
+
+## Cross-device sync (GitHub Gist)
+
+This keeps the same brain in sync across your phone and desktop, using one private Gist as the shared store — no server, no extra hosting.
+
+**First device:**
+1. Create a [personal access token](https://github.com/settings/tokens/new?scopes=gist&description=brain-sync) with just the `gist` scope
+2. Sidebar → Settings → paste the token, leave "Existing Gist ID" blank → **Create sync gist**
+3. Note the Gist ID shown in Settings afterward
+
+**Every other device:**
+1. Same personal access token (or generate a second one with the same `gist` scope)
+2. Sidebar → Settings → paste the token AND the Gist ID from the first device → **Connect to existing gist**
+
+Once connected, entries sync automatically a couple seconds after any change, and pull-merge on app load. You can also hit **Sync now** anytime. Merge logic is last-write-wins per entry, compared by each entry's own timestamp — fine for a single-user notes app, not built for simultaneous multi-editor conflict resolution.
+
+Your token lives only in that device's IndexedDB — it's never bundled into the deployed app.
 
 ---
 
@@ -87,16 +98,15 @@ The app is now a standalone icon on your home screen. Works offline after first 
 
 - **Capture**: always works, no connection needed
 - **AI enrichment**: queued if offline or no key; processes on reconnect
+- **Gist sync**: skipped while offline; resumes and catches up once back online
 - **Search + feed**: fully offline once app is cached (after first load)
 - **Digest**: requires connection + API key
 
-The online/offline indicator lives in the search bar header. The queue count shows how many entries are pending AI enrichment.
-
 ---
 
-## Phase 3 (future)
+## Phase 3 ideas
 
-- GitHub Gist sync for cross-device
 - Voice capture (Web Speech API)
 - Entry relationships / connection finder
 - Tag management panel
+- Conflict UI for simultaneous multi-device edits

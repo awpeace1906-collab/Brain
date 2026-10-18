@@ -20,7 +20,6 @@ async function resolveKey(provided) {
   return stored;
 }
 
-/* ── Enrich a single entry ── */
 export async function apiEnrich(content, apiKey) {
   const key = await resolveKey(apiKey);
   const res = await fetch(API_URL, {
@@ -42,7 +41,6 @@ export async function apiEnrich(content, apiKey) {
   catch { return null; }
 }
 
-/* ── Daily digest ── */
 export async function apiDigest(entries, apiKey) {
   const key = await resolveKey(apiKey);
   if (!entries.length) return 'Nothing captured today yet. Start sending thoughts.';
@@ -66,17 +64,12 @@ export async function apiDigest(entries, apiKey) {
   return d.content?.find(c => c.type === 'text')?.text || 'Could not generate digest.';
 }
 
-/* ── Validate key (test call) ── */
 export async function validateKey(key) {
   try {
     const res = await fetch(API_URL, {
       method: 'POST',
       headers: headers(key),
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 10,
-        messages: [{ role: 'user', content: 'Hi' }]
-      })
+      body: JSON.stringify({ model: MODEL, max_tokens: 10, messages: [{ role: 'user', content: 'Hi' }] })
     });
     return res.ok;
   } catch {
