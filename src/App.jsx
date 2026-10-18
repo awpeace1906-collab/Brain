@@ -221,7 +221,7 @@ function Sidebar({ open, isMobile, onClose, allTags, fTags, fType, fDate, fPin,
   const panel = (
     <div style={{ width:240, minWidth:240, height:'100%', background:'#161B22',
       borderRight:'1px solid #21262D', display:'flex', flexDirection:'column', overflow:'hidden',
-      position:isMobile?'fixed':'relative', left:0, top:0, zIndex:isMobile?50:undefined }}>
+      position:isMobile?'fixed':'relative', left:0, top:0, zIndex:isMobile?150:undefined }}>
       <div style={{ padding:'20px 20px 12px' }}>
         <div style={{ fontFamily:"'JetBrains Mono',monospace", fontWeight:500, fontSize:15, letterSpacing:'-0.5px' }}>
           <span style={{ color:'#58A6FF' }}>{'{ '}</span>
@@ -292,7 +292,7 @@ function Sidebar({ open, isMobile, onClose, allTags, fTags, fType, fDate, fPin,
   );
   if (isMobile) return (
     <>
-      <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.65)', zIndex:49 }}/>
+      <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.65)', zIndex:149 }}/>
       {panel}
     </>
   );
@@ -1379,6 +1379,11 @@ export default function App() {
             fontFamily:"'JetBrains Mono',monospace", whiteSpace:'nowrap' }}>
             {filtered.length}
           </span>
+          <button onClick={()=>setSO(true)} title="Settings" aria-label="Settings"
+            style={{ background:'none', border:'none', color:'#8B949E', display:'flex',
+              alignItems:'center', cursor:'pointer', flexShrink:0, padding:2 }}>
+            <Settings size={17}/>
+          </button>
         </div>
 
         {(fTags.length>0||fType!=='all'||fDate!=='all'||fPin)&&(
