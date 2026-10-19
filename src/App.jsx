@@ -6,7 +6,8 @@ import {
 } from 'lucide-react';
 import {
   getAllEntries, putEntry, putEntries, deleteEntry, clearAllEntries,
-  getSetting, setSetting, getQueue, addToQueue, removeFromQueue
+  getSetting, setSetting, getQueue, addToQueue, removeFromQueue,
+  getDeletedIds, addDeletedIds
 } from './db.js';
 import { apiEnrich, apiDigest, validateKey } from './api.js';
 import { validateToken, createGist, fetchGist, pushGist, mergeEntries } from './gist.js';
@@ -342,6 +343,7 @@ function SettingsPanel({ onClose, onEntriesCleared, onSyncConfigChanged, syncSta
   }
 
   async function doClear() {
+    await addDeletedIds((await getAllEntries()).map(e => e.id));
     await clearAllEntries();
     onEntriesCleared();
     onClose();
@@ -816,7 +818,7 @@ function EntryCard({ entry, processing, editing, editDraft, copied,
         </div>
         <span style={{ fontSize:11, color:'#3D444D',
           fontFamily:"'JetBrains Mono',monospace", whiteSpace:'nowrap' }}>
-          {ago(entry.timestamp)}
+          {entry.source&&`via ${entry.source} · `}{ago(entry.timestamp)}
         </span>
       </div>
     </div>
@@ -1080,24 +1082,7 @@ export default function App() {
     if (!loaded) return;
     const { token, gistId } = gistConfigRef.current;
     if (!token || !gistId) return;
-    (async () => {
-      setSyncStatus('syncing');
-      try {
-        const remote = await fetchGist(token, gistId);
-        const local  = await getAllEntries();
-        const merged = mergeEntries(local, remote.entries || []);
-        await putEntries(merged);
-        setE(merged);
-        await pushGist(token, gistId, merged.filter(e => !e.archived));
-        const now = new Date().toISOString();
-        await setSetting('lastSynced', now);
-        setLastSynced(now);
-        setSyncStatus('connected');
-      } catch (err) {
-        console.error('Initial sync failed:', err);
-        setSyncStatus('error');
-      }
-    })();
+    syncWithGist('Initial sync');
   }, [loaded]);
 
   /* ── Online / Offline ── */
@@ -1138,47 +1123,42 @@ export default function App() {
     }
   },[]);
 
-  /* ── Debounced push to gist whenever entries change ── */
-  const scheduleSync = useCallback(() => {
-    const { token, gistId } = gistConfigRef.current;
-    if (!token || !gistId) return;
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    syncTimerRef.current = setTimeout(async () => {
-      setSyncStatus('syncing');
-      try {
-        const current = await getAllEntries();
-        await pushGist(token, gistId, current.filter(e => !e.archived));
-        const now = new Date().toISOString();
-        await setSetting('lastSynced', now);
-        setLastSynced(now);
-        setSyncStatus('connected');
-      } catch (err) {
-        console.error('Background sync failed:', err);
-        setSyncStatus('error');
-      }
-    }, SYNC_DEBOUNCE_MS);
-  }, []);
-
-  async function manualSync() {
+  /* ── Pull, merge, push. Always pulls first so entries written to the
+     gist by another device or app aren't overwritten. ── */
+  const syncWithGist = useCallback(async (label) => {
     const { token, gistId } = gistConfigRef.current;
     if (!token || !gistId) return;
     setSyncStatus('syncing');
     try {
-      const remote = await fetchGist(token, gistId);
-      const local  = await getAllEntries();
-      const merged = mergeEntries(local, remote.entries || []);
+      const remote  = await fetchGist(token, gistId);
+      await addDeletedIds(remote.deleted || []);
+      const deleted = await getDeletedIds();
+      const local   = await getAllEntries();
+      const merged  = mergeEntries(local, remote.entries || [], deleted);
+      const gone    = new Set(deleted);
+      await Promise.all(local.filter(e => gone.has(e.id)).map(e => deleteEntry(e.id)));
       await putEntries(merged);
       setE(merged);
-      await pushGist(token, gistId, merged.filter(e => !e.archived));
+      await pushGist(token, gistId, merged.filter(e => !e.archived), deleted);
       const now = new Date().toISOString();
       await setSetting('lastSynced', now);
       setLastSynced(now);
       setSyncStatus('connected');
     } catch (err) {
-      console.error('Manual sync failed:', err);
+      console.error(`${label} failed:`, err);
       setSyncStatus('error');
     }
-  }
+  }, []);
+
+  /* ── Debounced sync whenever entries change ── */
+  const scheduleSync = useCallback(() => {
+    const { token, gistId } = gistConfigRef.current;
+    if (!token || !gistId) return;
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => syncWithGist('Background sync'), SYNC_DEBOUNCE_MS);
+  }, [syncWithGist]);
+
+  const manualSync = () => syncWithGist('Manual sync');
 
   async function refreshSyncConfig() {
     const [token, gistId] = await Promise.all([getSetting('githubToken'), getSetting('gistId')]);
@@ -1435,7 +1415,7 @@ export default function App() {
                   onPin={()=>upsertEntry({...e,pinned:!e.pinned})}
                   onCopy={()=>copyEntry(e)}
                   onArchive={()=>upsertEntry({...e,archived:true})}
-                  onDelete={async()=>{ await deleteEntry(e.id); setE(p=>p.filter(x=>x.id!==e.id)); scheduleSync(); }}
+                  onDelete={async()=>{ await addDeletedIds([e.id]); await deleteEntry(e.id); setE(p=>p.filter(x=>x.id!==e.id)); scheduleSync(); }}
                   onTag={toggleTag}/>
               ))}
             </div>
@@ -1456,7 +1436,7 @@ export default function App() {
       {settingsOpen&&(
         <SettingsPanel
           onClose={()=>{ setSO(false); getSetting('anthropicKey').then(k=>setHK(!!k)); }}
-          onEntriesCleared={()=>{ setE([]); }}
+          onEntriesCleared={()=>{ setE([]); scheduleSync(); }}
           onSyncConfigChanged={refreshSyncConfig}
           syncStatus={syncStatus}
           lastSynced={lastSynced}

@@ -114,6 +114,17 @@ export async function getAllSettings() {
   });
 }
 
+/* ── Deleted ids (sync tombstones) ── */
+
+export async function getDeletedIds() {
+  return (await getSetting('deletedIds')) || [];
+}
+
+export async function addDeletedIds(ids) {
+  const current = await getDeletedIds();
+  await setSetting('deletedIds', [...new Set([...current, ...ids])]);
+}
+
 /* ── AI Queue ── */
 
 export async function getQueue() {

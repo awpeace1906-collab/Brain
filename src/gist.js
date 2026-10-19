@@ -13,11 +13,29 @@
  *    last-write-wins on the entry's own timestamp field, then saves
  *    the merged result back locally AND pushes the merge back up so
  *    every device converges.
+ *
+ * Other apps (e.g. a chief-of-staff agent) can read and append to the
+ * same gist. The file format is described in INTEGRATION.md and in the
+ * public manifest at <app>/brain.json.
  */
 
 const API_BASE = 'https://api.github.com';
 const GIST_FILENAME = 'brain-data.json';
 const GIST_DESCRIPTION = '{ brain } — private second-brain sync (do not edit manually)';
+const SCHEMA = 'brain/v1';
+const TYPES = ['text', 'link', 'code', 'idea', 'quote'];
+
+/* The file body: entries plus ids deleted on any device (tombstones),
+   so a delete on one side isn't undone by the other side's copy. */
+function fileContent(entries, deleted) {
+  return JSON.stringify({
+    schema: SCHEMA,
+    manifest: new URL('brain.json', window.location.origin + import.meta.env.BASE_URL).href,
+    entries,
+    deleted,
+    syncedAt: new Date().toISOString()
+  }, null, 2);
+}
 
 function headers(token) {
   return {
@@ -46,9 +64,7 @@ export async function createGist(token, entries) {
       description: GIST_DESCRIPTION,
       public: false,
       files: {
-        [GIST_FILENAME]: {
-          content: JSON.stringify({ entries, syncedAt: new Date().toISOString() }, null, 2)
-        }
+        [GIST_FILENAME]: { content: fileContent(entries, []) }
       }
     })
   });
@@ -72,15 +88,13 @@ export async function fetchGist(token, gistId) {
 }
 
 /* ── Overwrite the gist with the given entries ── */
-export async function pushGist(token, gistId, entries) {
+export async function pushGist(token, gistId, entries, deleted = []) {
   const res = await fetch(`${API_BASE}/gists/${gistId}`, {
     method: 'PATCH',
     headers: headers(token),
     body: JSON.stringify({
       files: {
-        [GIST_FILENAME]: {
-          content: JSON.stringify({ entries, syncedAt: new Date().toISOString() }, null, 2)
-        }
+        [GIST_FILENAME]: { content: fileContent(entries, deleted) }
       }
     })
   });
@@ -89,23 +103,43 @@ export async function pushGist(token, gistId, entries) {
 }
 
 /*
+ * Remote entries may come from another app, so coerce them into the
+ * shape the UI expects. Anything without an id, content or a valid
+ * timestamp is dropped.
+ */
+function normalizeEntry(e) {
+  if (!e || typeof e.id !== 'string' || typeof e.content !== 'string') return null;
+  if (isNaN(new Date(e.timestamp))) return null;
+  return {
+    ...e,
+    type: TYPES.includes(e.type) ? e.type : 'text',
+    tags: Array.isArray(e.tags) ? e.tags.filter(t => typeof t === 'string') : [],
+    summary: typeof e.summary === 'string' ? e.summary : '',
+    pinned: !!e.pinned,
+    archived: !!e.archived,
+    aiPending: false
+  };
+}
+
+/*
  * Merge remote entries into local by id.
  * Last-write-wins based on each entry's own `timestamp`.
  * (Good enough for a single-user notes app — real conflict
  * resolution isn't worth the complexity here.)
- * Deleted-locally-but-present-remotely entries are NOT resurrected
- * if they're older than the most recent local "tombstone" — but
- * since we don't track tombstones, a delete on one device and an
- * edit on another can race. Acceptable tradeoff for this scale.
+ * Ids in `deleted` are dropped from both sides.
  */
-export function mergeEntries(local, remote) {
+export function mergeEntries(local, remote, deleted = []) {
+  const gone = new Set(deleted);
   const map = new Map();
-  for (const e of remote) map.set(e.id, e);
+  for (const r of remote) {
+    const e = normalizeEntry(r);
+    if (e) map.set(e.id, e);
+  }
   for (const e of local) {
     const existing = map.get(e.id);
     if (!existing || new Date(e.timestamp) >= new Date(existing.timestamp)) {
       map.set(e.id, e);
     }
   }
-  return Array.from(map.values());
+  return Array.from(map.values()).filter(e => !gone.has(e.id));
 }

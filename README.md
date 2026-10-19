@@ -83,6 +83,12 @@ Your token lives only in that device's IndexedDB — it's never bundled into the
 
 ---
 
+## Connecting other apps
+
+Other apps and agents (for example a chief-of-staff assistant) can find Brain and read or add entries through the same sync gist. The app publishes a manifest at `brain.json` (for example `https://<you>.github.io/brain/brain.json`). The full contract is in [INTEGRATION.md](INTEGRATION.md).
+
+---
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |
