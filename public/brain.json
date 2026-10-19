@@ -1,0 +1,40 @@
+{
+  "name": "{ brain }",
+  "kind": "second-brain",
+  "schema": "brain/v1",
+  "description": "Private, offline-first second brain. Holds notes, links, code, ideas and quotes, each tagged and summarized. Other apps and agents connect through the owner's private GitHub Gist.",
+  "app": "./",
+  "docs": "https://github.com/awpeace1906-collab/Brain/blob/main/INTEGRATION.md",
+  "store": {
+    "type": "github-gist",
+    "auth": "GitHub token with the 'gist' scope, belonging to the brain's owner",
+    "discover": "GET https://api.github.com/gists and pick the gist whose files include 'brain-data.json' (its description starts with '{ brain }')",
+    "file": "brain-data.json",
+    "descriptionPrefix": "{ brain }"
+  },
+  "file": {
+    "schema": "brain/v1",
+    "entries": "array of Entry",
+    "deleted": "array of entry ids deleted on any device; never re-add these",
+    "syncedAt": "ISO 8601 time of the last write"
+  },
+  "entry": {
+    "id": "string, unique; prefix with your app name, e.g. 'tower-1760900000000-ab12'",
+    "content": "string, the note itself",
+    "type": "one of: text, link, code, idea, quote",
+    "tags": "array of 1-3 lowercase strings",
+    "summary": "string, at most 12 words, active voice",
+    "pinned": "boolean",
+    "archived": "boolean",
+    "timestamp": "ISO 8601; last-write-wins on this field, so bump it when updating an entry",
+    "source": "optional string naming the app that wrote the entry; shown as 'via <source>'",
+    "url": "optional, for links",
+    "domain": "optional, for links"
+  },
+  "rules": [
+    "Read the gist, change it, and write it back in one step. Keep every entry and field you didn't create.",
+    "To add, append a new entry with a new id and your app name in 'source'.",
+    "To delete, remove the entry and add its id to 'deleted'.",
+    "Write back with PATCH https://api.github.com/gists/{id} and the whole file as files['brain-data.json'].content."
+  ]
+}
